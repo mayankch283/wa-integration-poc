@@ -7,11 +7,10 @@ app = FastAPI()
 
 
 @app.post("/send-whatsapp-message")
-async def send_whatsapp_message(phone_number: str, template_name: str = "hello_world", language_code: str = "en_US"):
+async def send_whatsapp_message(phone_number: str, message: str = "Hello! I'm Mayank. This is a test message sent from Whatsapp API. Bye!", language_code: str = "en_US"):
     load_dotenv()
     token = os.getenv("WHATSAPP_API_TOKEN")
     phone_id = os.getenv("WHATSAPP_PHONE_ID")
-
     url = f"https://graph.facebook.com/v22.0/{phone_id}/messages"
 
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
@@ -22,7 +21,7 @@ async def send_whatsapp_message(phone_number: str, template_name: str = "hello_w
         "type": "text",
         "text": {
             "preview_url": True,
-            "body": "Hello! I'm Mayank. This is a test message sent from Whatsapp API. Bye!",
+            "body": message,
         },
     }
 
