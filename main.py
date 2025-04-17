@@ -1,10 +1,14 @@
 import os
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Request
 import httpx
 from dotenv import load_dotenv
+from typing import Dict, Any
+import hashlib
+import hmac
 
 app = FastAPI()
 
+message_status_store = {}
 
 @app.post("/send-whatsapp-message")
 async def send_whatsapp_message(phone_number: str, message: str = "Hello! I'm Mayank. This is a test message sent from Whatsapp API. Bye!", language_code: str = "en_US"):
@@ -29,13 +33,92 @@ async def send_whatsapp_message(phone_number: str, message: str = "Hello! I'm Ma
         async with httpx.AsyncClient() as client:
             response = await client.post(url, headers=headers, json=payload)
             response.raise_for_status()
-            return response.json()
+            result = response.json()
+            
+            if "messages" in result and len(result["messages"]) > 0:
+                message_id = result["messages"][0]["id"]
+                message_status_store[message_id] = {
+                    "phone_number": phone_number,
+                    "status": "sent",
+                    "details": {}
+                }
+                
+            return {
+                "status": "message_sent",
+                "api_response": result,
+                "note": "This only confirms the API accepted your request. Check webhook for delivery status."
+            }
     except httpx.HTTPStatusError as e:
-        raise HTTPException(
-            status_code=e.response.status_code,
-            detail=f"WhatsApp API error: {e.response.text}",
-        )
+        raise HTTPException(status_code=e.response.status_code, detail=f"WhatsApp API error: {e.response.text}")
     except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to send WhatsApp message: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to send WhatsApp message: {str(e)}")
+    
+async def verify_webhook_signature(request: Request):
+    """Verify that incoming webhooks are from Meta using the signature"""
+    app_secret = os.environ.get("META_APP_SECRET", "your_app_secret")
+    signature = request.headers.get("x-hub-signature-256", "")
+    
+    if not signature:
+        return True 
+    
+    body = await request.body()
+    
+    # Generate the expected signature
+    expected_signature = "sha256=" + hmac.new(
+        app_secret.encode('utf-8'),
+        body,
+        hashlib.sha256
+    ).hexdigest()
+    
+    # Compare signatures
+    if not hmac.compare_digest(signature, expected_signature):
+        raise HTTPException(status_code=403, detail="Invalid webhook signature")
+    
+    return True
+
+@app.post("/whatsapp/webhook")
+async def whatsapp_webhook(request: Request, verified: bool = Depends(verify_webhook_signature)):
+    """Receive webhook notifications from WhatsApp"""
+    body = await request.json()
+    
+    # Handle webhook verification challenge
+    if "hub.mode" in body and body["hub.mode"] == "subscribe":
+        if body["hub.verify_token"] == os.environ.get("WEBHOOK_VERIFY_TOKEN", "your_verify_token"):
+            return {"hub.challenge": body["hub.challenge"]}
+        else:
+            raise HTTPException(status_code=403, detail="Verification token mismatch")
+    
+    # Process status updates
+    try:
+        if "entry" in body:
+            for entry in body["entry"]:
+                for change in entry.get("changes", []):
+                    if change.get("field") == "messages":
+                        process_message_status_updates(change.get("value", {}))
+        
+        return {"status": "received"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to process webhook: {str(e)}")
+
+def process_message_status_updates(data: Dict[str, Any]):
+    """Process message status updates from webhooks"""
+    # Handle delivery status updates
+    if "statuses" in data:
+        for status in data["statuses"]:
+            message_id = status.get("id")
+            if message_id in message_status_store:
+                message_status_store[message_id]["status"] = status.get("status")
+                message_status_store[message_id]["details"] = status
+                print(f"Message {message_id} status updated to: {status.get('status')}")
+
+@app.get("/message-status/{message_id}")
+async def get_message_status(message_id: str):
+    """Get the delivery status of a message"""
+    if message_id in message_status_store:
+        return message_status_store[message_id]
+    raise HTTPException(status_code=404, detail="Message ID not found")
+
+@app.get("/all-message-statuses")
+async def get_all_message_statuses():
+    """Get statuses of all tracked messages"""
+    return message_status_store
