@@ -200,3 +200,8 @@ async def log_requests(request: Request, call_next: Callable) -> Response:
 async def get_recent_requests():
     """Endpoint to view recent request logs"""
     return {"requests": recent_requests}
+
+@app.get("/")
+async def root():
+    """Health check endpoint"""
+    return {"status": "online", "timestamp": datetime.utcnow().isoformat()}
